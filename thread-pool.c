@@ -25,6 +25,10 @@
 #include "block/thread-pool.h"
 #include "qemu/main-loop.h"
 
+//added by Weiwei Jia
+#define _DEBUG_LEN		(20480)
+#define _DEBUG_FILE		"/tmp/debug"
+
 static void do_spawn_thread(ThreadPool *pool);
 
 typedef struct ThreadPoolElement ThreadPoolElement;
@@ -77,6 +81,9 @@ struct ThreadPool {
     int pending_threads; /* threads created but not running yet */
     int pending_cancellations; /* whether we need a cond_broadcast */
     bool stopping;
+	//added by Weiwei Jia
+	char debug[_DEBUG_LEN];
+	int len;
 };
 
 static void *worker_thread(void *opaque)
@@ -93,9 +100,13 @@ static void *worker_thread(void *opaque)
 
         do {
             pool->idle_threads++;
+			sprintf(pool->debug + pool->len, "B : %lu\n", (unsigned long) pthread_self());
+			pool->len = strlen(pool->debug);
             qemu_mutex_unlock(&pool->lock);
             ret = qemu_sem_timedwait(&pool->sem, 10000);
             qemu_mutex_lock(&pool->lock);
+			sprintf(pool->debug + pool->len, "A : %lu\n", (unsigned long) pthread_self());
+			pool->len = strlen(pool->debug);
             pool->idle_threads--;
         } while (ret == -1 && !QTAILQ_EMPTY(&pool->request_list));
         if (ret == -1 || pool->stopping) {
@@ -299,6 +310,9 @@ static void thread_pool_init_one(ThreadPool *pool, AioContext *ctx)
     qemu_cond_init(&pool->worker_stopped);
     qemu_sem_init(&pool->sem, 0);
     pool->max_threads = 64;
+	//added by Weiwei Jia
+	memset(pool->debug, '\0', _DEBUG_LEN);
+	pool->len = 0;
     pool->new_thread_bh = aio_bh_new(ctx, spawn_thread_bh_fn, pool);
 
     QLIST_INIT(&pool->head);
@@ -322,12 +336,23 @@ void thread_pool_free(ThreadPool *pool)
 
     assert(QLIST_EMPTY(&pool->head));
 
+	int fd = open(_DEBUG_FILE, O_CREAT | O_RDWR, 00777);
+	if (fd < 0) {
+		fprintf(stderr, "open or create debug file error!\n");
+	}
+
     qemu_mutex_lock(&pool->lock);
 
     /* Stop new threads from spawning */
     qemu_bh_delete(pool->new_thread_bh);
     pool->cur_threads -= pool->new_threads;
     pool->new_threads = 0;
+
+	if (pool->len != pwrite(fd, pool->debug, pool->len, 0)) {
+		fprintf(stderr, "This write failed!\n");
+	}
+
+	close(fd);
 
     /* Wait for worker threads to terminate */
     pool->stopping = true;
