@@ -84,6 +84,7 @@ struct ThreadPool {
 	//added by Weiwei Jia
 	char debug[_DEBUG_LEN];
 	int len;
+	int fd;
 };
 
 static void *worker_thread(void *opaque)
@@ -100,13 +101,23 @@ static void *worker_thread(void *opaque)
 
         do {
             pool->idle_threads++;
-			sprintf(pool->debug + pool->len, "B : %lu\n", (unsigned long) pthread_self());
-			pool->len = strlen(pool->debug);
+			//added by Weiwei Jia
+			sprintf(pool->debug, "B : %lu\n", (unsigned long) pthread_self());
+			if (25 != pwrite(pool->fd, pool->debug, 25, pool->len)) {
+					fprintf(stderr, "This write failed!\n");
+			}
+			pool->len = pool->len + 25;
+			memset(pool->debug, '\0', _DEBUG_LEN);
             qemu_mutex_unlock(&pool->lock);
             ret = qemu_sem_timedwait(&pool->sem, 10000);
             qemu_mutex_lock(&pool->lock);
-			sprintf(pool->debug + pool->len, "A : %lu\n", (unsigned long) pthread_self());
-			pool->len = strlen(pool->debug);
+			//added by Weiwei Jia
+			sprintf(pool->debug, "A : %lu\n", (unsigned long) pthread_self());
+			if (25 != pwrite(pool->fd, pool->debug, 25, pool->len)) {
+					fprintf(stderr, "This write failed!\n");
+			}
+			pool->len = pool->len + 25;
+			memset(pool->debug, '\0', _DEBUG_LEN);
             pool->idle_threads--;
         } while (ret == -1 && !QTAILQ_EMPTY(&pool->request_list));
         if (ret == -1 || pool->stopping) {
@@ -313,6 +324,10 @@ static void thread_pool_init_one(ThreadPool *pool, AioContext *ctx)
 	//added by Weiwei Jia
 	memset(pool->debug, '\0', _DEBUG_LEN);
 	pool->len = 0;
+	pool->fd = open(_DEBUG_FILE, O_CREAT | O_RDWR, 00777);
+	if (pool->fd < 0) {
+		fprintf(stderr, "open or create debug file error!\n");
+	}
     pool->new_thread_bh = aio_bh_new(ctx, spawn_thread_bh_fn, pool);
 
     QLIST_INIT(&pool->head);
@@ -336,10 +351,6 @@ void thread_pool_free(ThreadPool *pool)
 
     assert(QLIST_EMPTY(&pool->head));
 
-	int fd = open(_DEBUG_FILE, O_CREAT | O_RDWR, 00777);
-	if (fd < 0) {
-		fprintf(stderr, "open or create debug file error!\n");
-	}
 
     qemu_mutex_lock(&pool->lock);
 
@@ -348,11 +359,8 @@ void thread_pool_free(ThreadPool *pool)
     pool->cur_threads -= pool->new_threads;
     pool->new_threads = 0;
 
-	if (pool->len != pwrite(fd, pool->debug, pool->len, 0)) {
-		fprintf(stderr, "This write failed!\n");
-	}
-
-	close(fd);
+	//added by Weiwei Jia
+	close(pool->fd);
 
     /* Wait for worker threads to terminate */
     pool->stopping = true;
