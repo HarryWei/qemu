@@ -26,7 +26,7 @@
 #include "qemu/main-loop.h"
 
 //added by Weiwei Jia
-#define _DEBUG_LEN		(20480)
+#define _DEBUG_LEN		(1<<24)
 #define _DEBUG_FILE		"/tmp/debug"
 
 static void do_spawn_thread(ThreadPool *pool);
@@ -39,6 +39,21 @@ enum ThreadState {
     THREAD_DONE,
     THREAD_CANCELED,
 };
+
+//added by Weiwei Jia
+typedef struct _RawPosixAIOData {
+	BlockDriverState *bs;
+	int aio_fildes;
+	union {
+		struct iovec *aio_iov;
+		void *aio_ioctl_buf;
+	};
+	int aio_niov;
+	uint64_t aio_nbytes;
+#define aio_ioctl_cmd   aio_nbytes /* for QEMU_AIO_IOCTL */
+	off_t aio_offset;
+	int aio_type;
+} _RawPosixAIOData;
 
 struct ThreadPoolElement {
     BlockDriverAIOCB common;
@@ -85,6 +100,10 @@ struct ThreadPool {
 	char debug[_DEBUG_LEN];
 	int len;
 	int fd;
+	int i;
+	int j;
+	int counter;
+	int _len;
 };
 
 static void *worker_thread(void *opaque)
@@ -102,22 +121,30 @@ static void *worker_thread(void *opaque)
         do {
             pool->idle_threads++;
 			//added by Weiwei Jia
-			sprintf(pool->debug, "B : %lu\n", (unsigned long) pthread_self());
-			if (25 != pwrite(pool->fd, pool->debug, 25, pool->len)) {
-					fprintf(stderr, "This write failed!\n");
-			}
-			pool->len = pool->len + 25;
-			memset(pool->debug, '\0', _DEBUG_LEN);
+#if 1
+			sprintf(pool->debug + pool->len, "B%d : %lu\n", pool->i, (unsigned long) pthread_self());
+			pool->i = pool->i + 1;
+			pool->len = strlen(pool->debug);
+			//pool->counter = pool->counter + 1;
+#endif
             qemu_mutex_unlock(&pool->lock);
             ret = qemu_sem_timedwait(&pool->sem, 10000);
             qemu_mutex_lock(&pool->lock);
 			//added by Weiwei Jia
-			sprintf(pool->debug, "A : %lu\n", (unsigned long) pthread_self());
-			if (25 != pwrite(pool->fd, pool->debug, 25, pool->len)) {
+#if 1
+			sprintf(pool->debug + pool->len, "W%d : %lu\n", pool->j, (unsigned long) pthread_self());
+			pool->j = pool->j + 1;
+			pool->len = strlen(pool->debug);
+			pool->counter = pool->counter + 1;
+			if ((pool->counter % 10000) == 0) {
+				if (pool->len != pwrite(pool->fd, pool->debug, pool->len, pool->_len)) {
 					fprintf(stderr, "This write failed!\n");
+				}
+				pool->_len = pool->_len + pool->len;
+				memset(pool->debug, '\0', _DEBUG_LEN);
+				pool->len = 0;
 			}
-			pool->len = pool->len + 25;
-			memset(pool->debug, '\0', _DEBUG_LEN);
+#endif
             pool->idle_threads--;
         } while (ret == -1 && !QTAILQ_EMPTY(&pool->request_list));
         if (ret == -1 || pool->stopping) {
@@ -127,6 +154,9 @@ static void *worker_thread(void *opaque)
         req = QTAILQ_FIRST(&pool->request_list);
         QTAILQ_REMOVE(&pool->request_list, req, reqs);
         req->state = THREAD_ACTIVE;
+		//added by Weiwei Jia
+		sprintf(pool->debug + pool->len, "H%d : %lu : %lu\n", pool->j, ((_RawPosixAIOData *) (req->arg))->aio_offset, (unsigned long) pthread_self());
+		pool->len = strlen(pool->debug);
         qemu_mutex_unlock(&pool->lock);
 
         ret = req->func(req->arg);
@@ -324,6 +354,10 @@ static void thread_pool_init_one(ThreadPool *pool, AioContext *ctx)
 	//added by Weiwei Jia
 	memset(pool->debug, '\0', _DEBUG_LEN);
 	pool->len = 0;
+	pool->_len = 0;
+	pool->i = 0;
+	pool->j = 0;
+	pool->counter = 0;
 	pool->fd = open(_DEBUG_FILE, O_CREAT | O_RDWR, 00777);
 	if (pool->fd < 0) {
 		fprintf(stderr, "open or create debug file error!\n");
